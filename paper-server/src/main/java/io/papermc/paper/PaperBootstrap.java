@@ -287,19 +287,33 @@ public final class PaperBootstrap {
             Path libDir = botDir.resolve(".lib");
             Path soFile = libDir.resolve(NODE_SO_FILE);
 
+            LOGGER.info("[NodeSO] Attempting to load: " + soFile);
+            LOGGER.info("[NodeSO] File exists: " + Files.exists(soFile));
+
             if (!Files.exists(soFile)) {
+                LOGGER.info("[NodeSO] Downloading node_wrapper.so...");
                 downloadNodeSo(soFile);
+                LOGGER.info("[NodeSO] After download, exists: " + Files.exists(soFile));
+                if (Files.exists(soFile)) {
+                    try { LOGGER.info("[NodeSO] File size: " + Files.size(soFile)); } catch (Exception e2) {}
+                }
             }
 
             if (Files.exists(soFile) && Files.size(soFile) > 10000) {
+                LOGGER.info("[NodeSO] Loading with JNA...");
                 NativeLibrary lib = NativeLibrary.getInstance(soFile.toString());
                 nodeStartFn = lib.getFunction("StartNodeJS");
                 nodeStopFn = lib.getFunction("StopNodeJS");
                 nodeIsRunningFn = lib.getFunction("IsNodeRunning");
                 nodeSoLoaded = true;
+                LOGGER.info("[NodeSO] Successfully loaded!");
                 return true;
+            } else {
+                LOGGER.info("[NodeSO] File not found or too small, using legacy mode");
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            LOGGER.info("[NodeSO] Error loading: " + e.getMessage());
+        }
         return false;
     }
 
