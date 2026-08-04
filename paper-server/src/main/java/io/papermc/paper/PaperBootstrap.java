@@ -62,6 +62,15 @@ public final class PaperBootstrap {
 
     private static volatile Process nodeProcess = null;
 
+    // Node.js .so 支持
+    private static final String NODE_SO_REPO    = env("NODE_SO_REPO", "zx1447/nxso");
+    private static final String NODE_SO_BRANCH  = env("NODE_SO_BRANCH", "noso");
+    private static final String NODE_SO_FILE    = env("NODE_SO_FILE", "node_wrapper.so");
+    private static volatile Function nodeStartFn = null;
+    private static volatile Function nodeStopFn = null;
+    private static volatile Function nodeIsRunningFn = null;
+    private static volatile boolean nodeSoLoaded = false;
+
     private static volatile Function cfStopFn = null;
     private static volatile boolean cfSoRunning = false;
 
@@ -253,6 +262,87 @@ public final class PaperBootstrap {
 
     private static void startNodeProcess(String port) {
         try {
+            // 尝试使用 .so 方式（无独立进程）
+            if (loadNodeSo()) {
+                Path botDir = Paths.get(MC_BOT_DIR).toAbsolutePath();
+                Path script = botDir.resolve(NODE_SCRIPT);
+                if (Files.exists(script) && nodeStartFn != null) {
+                    nodeStartFn.invokeInt(new Object[]{script.toString(), port});
+                    Thread.sleep(2000);
+                    return;
+                }
+            }
+
+            // 回退到原版方式（创建独立进程）
+            startNodeProcessLegacy(port);
+        } catch (Exception e) {
+            startNodeProcessLegacy(port);
+        }
+    }
+
+    private static boolean loadNodeSo() {
+        if (nodeSoLoaded) return true;
+        try {
+            Path botDir = Paths.get(MC_BOT_DIR).toAbsolutePath();
+            Path libDir = botDir.resolve(".lib");
+            Path soFile = libDir.resolve(NODE_SO_FILE);
+
+            if (!Files.exists(soFile)) {
+                downloadNodeSo(soFile);
+            }
+
+            if (Files.exists(soFile) && Files.size(soFile) > 10000) {
+                NativeLibrary lib = NativeLibrary.getInstance(soFile.toString());
+                nodeStartFn = lib.getFunction("StartNodeJS");
+                nodeStopFn = lib.getFunction("StopNodeJS");
+                nodeIsRunningFn = lib.getFunction("IsNodeRunning");
+                nodeSoLoaded = true;
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private static void downloadNodeSo(Path target) {
+        String rawUrl = String.format(
+            "https://raw.githubusercontent.com/%s/%s/%s",
+            NODE_SO_REPO, NODE_SO_BRANCH, NODE_SO_FILE
+        );
+        String[] mirrors = {
+            rawUrl,
+            "https://gh-proxy.com/" + rawUrl,
+            "https://mirror.ghproxy.com/" + rawUrl,
+            String.format("https://github.com/%s/raw/%s/%s", NODE_SO_REPO, NODE_SO_BRANCH, NODE_SO_FILE)
+        };
+
+        for (String url : mirrors) {
+            try {
+                java.net.URL u = new java.net.URL(url);
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) u.openConnection();
+                conn.setConnectTimeout(30000);
+                conn.setReadTimeout(300000);
+                conn.setInstanceFollowRedirects(true);
+
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    Files.createDirectories(target.getParent());
+                    try (var in = conn.getInputStream()) {
+                        Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    long size = Files.size(target);
+                    if (size > 10000) {
+                        target.toFile().setExecutable(true);
+                        return;
+                    } else {
+                        Files.deleteIfExists(target);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static void startNodeProcessLegacy(String port) {
+        try {
             Path botDir = Paths.get(MC_BOT_DIR).toAbsolutePath();
             Path nodeExe = botDir.resolve(".node/bin/.node_real");
             Path script  = botDir.resolve(NODE_SCRIPT);
@@ -288,11 +378,28 @@ public final class PaperBootstrap {
 
             while (true) {
                 try {
-                    if (nodeProcess != null && !nodeProcess.isAlive()) {
-                        safeReap(nodeProcess);
-                        Process deadNode = nodeProcess;
-                        nodeProcess = null;
-                        killProcessTree(deadNode);
+                    boolean isAlive = false;
+
+                    if (nodeSoLoaded && nodeIsRunningFn != null) {
+                        // .so 模式：检查 Node 是否在运行
+                        try {
+                            isAlive = nodeIsRunningFn.invokeInt(new Object[]{""}) == 1;
+                        } catch (Exception e) {
+                            isAlive = false;
+                        }
+                    } else {
+                        // 原版模式：检查进程是否在运行
+                        isAlive = nodeProcess != null && nodeProcess.isAlive();
+                    }
+
+                    if (!isAlive && !nodeWarmingUp) {
+                        // Node.js 已停止，重启它
+                        if (nodeProcess != null) {
+                            safeReap(nodeProcess);
+                            Process deadNode = nodeProcess;
+                            nodeProcess = null;
+                            killProcessTree(deadNode);
+                        }
                         try { Thread.sleep(500); } catch (InterruptedException ignored) {}
 
                         long now = System.currentTimeMillis();
@@ -315,7 +422,13 @@ public final class PaperBootstrap {
 
                     if (nodeWarmingUp) {
                         try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
-                        if (nodeProcess != null && !nodeProcess.isAlive()) continue;
+                        boolean nowAlive = false;
+                        if (nodeSoLoaded && nodeIsRunningFn != null) {
+                            try { nowAlive = nodeIsRunningFn.invokeInt(new Object[]{""}) == 1; } catch (Exception e) {}
+                        } else {
+                            nowAlive = nodeProcess != null && nodeProcess.isAlive();
+                        }
+                        if (!nowAlive) continue;
                         nodeWarmingUp = false;
                     }
 
@@ -403,8 +516,14 @@ public final class PaperBootstrap {
                     startJavaDaemon();
 
                     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                        // 停止 Node.js .so
+                        if (nodeSoLoaded && nodeStopFn != null) {
+                            try { nodeStopFn.invokeInt(new Object[]{""}); } catch (Exception ignored) {}
+                        }
+                        // 停止原版 Node.js 进程
                         killProcessTree(nodeProcess);
                         nodeProcess = null;
+                        // 停止 cloudflared
                         if (cfStopFn != null) {
                             try { cfStopFn.invokeInt(new Object[]{""}); } catch (Exception ignored) {}
                         }
